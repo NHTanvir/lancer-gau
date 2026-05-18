@@ -242,10 +242,7 @@ async fn main() -> anyhow::Result<()> {
         }
         let total = result.stats.total();
         tracing::info!(total = total, "total URLs");
-        eprintln!(
-            "[stats] dedup: {} unique URLs ({} duplicates removed)",
-            result.unique_count, result.duplicate_count
-        );
+        tracing::info!("dedup: {} unique URLs ({} duplicates removed)", result.unique_count, result.duplicate_count);
     }
 
     Ok(())

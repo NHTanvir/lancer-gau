@@ -22,7 +22,8 @@ use crate::providers::{Provider, UrlRecord};
 // Public types
 // ---------------------------------------------------------------------------
 
-/// Per-provider URL counts collected after all tasks complete.
+/// Per-provider URL counts after deduplication. Numbers reflect unique
+/// URLs accepted from each provider, not the total fetched.
 pub struct ProviderStats {
     /// Provider name → number of URLs returned across all domains.
     pub by_provider: HashMap<String, usize>,

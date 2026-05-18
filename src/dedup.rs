@@ -1,7 +1,6 @@
 //! Dedup engine — deduplicates URLs by their normalized form.
 //!
-//! Uses a Cuckoo filter for probabilistic membership testing combined with
-//! xxh3 hashing for fast, high-quality 64-bit fingerprints of normalized URLs.
+//! Uses a Cuckoo filter for probabilistic membership testing on normalized URLs.
 //!
 //! For scale beyond typical bug-bounty targets (>5 GB RAM usage), a redb
 //! on-disk spill can be added later — see the TODO comment below.
@@ -9,7 +8,6 @@
 use std::collections::hash_map::DefaultHasher;
 
 use cuckoofilter::CuckooFilter;
-use xxhash_rust::xxh3::xxh3_64;
 
 // ---------------------------------------------------------------------------
 // Normalization helper
@@ -128,11 +126,8 @@ pub fn normalize(url: &str) -> String {
 // Public: Dedup
 // ---------------------------------------------------------------------------
 
-/// Probabilistic URL deduplicator backed by a Cuckoo filter + xxh3.
-///
-/// The filter stores 64-bit xxh3 hashes of normalized URLs as 8-byte keys,
-/// giving a false-positive rate of roughly 3% at capacity (configurable by
-/// choosing a larger initial capacity at construction time).
+/// Cuckoo filter with 1M capacity (~8MB). False-positive rate is ~1-2%
+/// at full capacity due to the crate's 1-byte fingerprint.
 ///
 /// # Memory / spill
 ///
@@ -162,26 +157,14 @@ impl Dedup {
 
     /// Returns `true` if this URL has not been seen before (and inserts it),
     /// `false` if it is a duplicate.
-    ///
-    /// The dedup key is the xxh3-64 hash of the normalized URL, stored as an
-    /// 8-byte little-endian slice in the Cuckoo filter.
     pub fn check_and_insert(&mut self, url: &str) -> bool {
         let normalized = normalize(url);
-        let hash = xxh3_64(normalized.as_bytes());
-        let key = hash.to_le_bytes();
-
-        // TODO: spill to redb above 5 GB RAM threshold — when the filter
-        // approaches its capacity (or a measured RSS exceeds 5 GB), serialize
-        // new entries into a redb B-tree keyed by the same 8-byte hash.
-
-        if self.filter.contains(&key) {
+        // TODO: spill to redb above 5 GB RAM threshold
+        if self.filter.contains(normalized.as_bytes()) {
             self.duplicate_count += 1;
             false
         } else {
-            // `add` can fail if the filter is full (returns Err).  We treat a
-            // full filter as "not seen" and still emit the URL rather than
-            // silently dropping it.
-            let _ = self.filter.add(&key);
+            let _ = self.filter.add(normalized.as_bytes());
             self.seen_count += 1;
             true
         }
