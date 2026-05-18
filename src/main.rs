@@ -5,6 +5,7 @@
 mod config;
 mod dedup;
 mod filters;
+mod output;
 mod providers;
 mod runner;
 
@@ -16,7 +17,6 @@ use tracing::debug;
 
 use config::{load_config, parse_codes, split_csv, Config};
 use filters::Filter;
-use providers::UrlRecord;
 
 // ---------------------------------------------------------------------------
 // CLI definition — all 20 flags
@@ -204,9 +204,6 @@ async fn main() -> anyhow::Result<()> {
     if cfg.parameters {
         eprintln!("[warn] --fp (file path parameters) is not yet implemented");
     }
-    if cfg.output_file.is_some() {
-        eprintln!("[warn] -o/--output file writing is not yet implemented; outputting to stdout");
-    }
 
     debug!(config = ?cfg, "Resolved configuration");
 
@@ -233,11 +230,6 @@ async fn main() -> anyhow::Result<()> {
     // ---- build reqwest client ----
     let client = build_client(&cfg)?;
 
-    // ---- set up output writer ----
-    // (Full file-output support comes in later tasks; for now we always write
-    //  to stdout but honour the --json flag format.)
-    let use_json = cfg.json;
-
     // ---- build filter early (fail fast on bad regex / invalid date args) ----
     let filter = Filter::from_config(&cfg)?;
 
@@ -253,21 +245,20 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     // ---- output records ----
-    for rec in &filtered {
-        print_record(rec, use_json);
+    let mut writer = output::make_writer(cfg.output_file.as_deref(), cfg.json)?;
+    for record in &filtered {
+        writer.write_record(record)?;
     }
+    writer.flush()?;
 
     // ---- verbose stats ----
     if cfg.verbose {
-        let mut sorted: Vec<(&String, &usize)> = result.stats.by_provider.iter().collect();
-        sorted.sort_by_key(|(k, _)| k.as_str());
-        for (name, n) in &sorted {
-            tracing::info!(provider = %name, count = n, "provider stats");
-        }
-        let total = result.stats.total();
-        tracing::info!(total = total, "total URLs");
-        tracing::info!("dedup: {} unique URLs ({} duplicates removed)", result.unique_count, result.duplicate_count);
-        tracing::info!("filters: {} records after filter ({} dropped)", filtered.len(), result.unique_count - filtered.len());
+        output::report_stats(
+            &result.stats,
+            result.unique_count,
+            result.duplicate_count,
+            filtered.len(),
+        );
     }
 
     Ok(())
@@ -295,19 +286,3 @@ fn build_client(cfg: &Config) -> anyhow::Result<reqwest::Client> {
     Ok(builder.build()?)
 }
 
-/// Print a single `UrlRecord` to stdout (plain text or JSON-lines).
-fn print_record(rec: &UrlRecord, use_json: bool) {
-    if use_json {
-        // Minimal JSON-lines format
-        let obj = serde_json::json!({
-            "url": rec.url,
-            "source": rec.source,
-            "status": rec.status_code,
-            "mime": rec.mime_type,
-            "timestamp": rec.timestamp,
-        });
-        println!("{}", obj);
-    } else {
-        println!("{}", rec.url);
-    }
-}

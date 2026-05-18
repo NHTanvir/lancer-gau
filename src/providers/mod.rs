@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
 
 /// Shared browser User-Agent strings used when `--random-agent` is set.
 /// Both the Wayback and Common Crawl providers use this list.
@@ -19,14 +20,17 @@ pub const USER_AGENTS: &[&str] = &[
 ];
 
 /// A single URL record yielded by any provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UrlRecord {
     pub url: String,
     /// Which provider produced this record: "wayback", "commoncrawl", "otx", "urlscan"
     pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
     /// ISO-ish timestamp string from provider metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
 }
 
