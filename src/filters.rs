@@ -273,6 +273,7 @@ mod tests {
             status_code: None,
             mime_type: None,
             timestamp: None,
+            score: None,
         }
     }
 

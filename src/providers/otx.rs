@@ -196,6 +196,7 @@ impl OtxProvider {
                 status_code,
                 mime_type: None,
                 timestamp,
+                score: None,
             });
         }
 

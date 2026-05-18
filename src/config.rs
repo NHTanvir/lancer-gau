@@ -88,6 +88,14 @@ pub struct Config {
     #[serde(default)]
     pub filter_regex: Option<String>,
 
+    /// AI-rank URLs by exploit potential (requires ANTHROPIC_API_KEY env var).
+    #[serde(default)]
+    pub ai_rank: bool,
+
+    /// Diff mode: emit only URLs not present in the previous run file.
+    #[serde(default)]
+    pub diff: Option<String>,
+
     // Sub-configs
     #[serde(default)]
     pub urlscan: UrlScanConfig,
@@ -150,6 +158,8 @@ impl Default for Config {
             to: None,
             match_regex: None,
             filter_regex: None,
+            ai_rank: false,
+            diff: None,
             urlscan: UrlScanConfig::default(),
             otx: OtxConfig::default(),
         }

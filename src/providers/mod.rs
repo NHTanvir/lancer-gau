@@ -32,6 +32,9 @@ pub struct UrlRecord {
     /// ISO-ish timestamp string from provider metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// AI-assigned exploit-potential score (1-10). Set by --ai-rank.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<u8>,
 }
 
 /// Return a random user-agent string from the shared list.

@@ -32,7 +32,10 @@ struct TextWriter<W: Write> {
 
 impl<W: Write + Send> OutputWriter for TextWriter<W> {
     fn write_record(&mut self, record: &UrlRecord) -> io::Result<()> {
-        writeln!(self.inner, "{}", record.url)
+        match record.score {
+            Some(s) => writeln!(self.inner, "{} {}", s, record.url),
+            None => writeln!(self.inner, "{}", record.url),
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -145,6 +148,7 @@ mod tests {
             status_code: None,
             mime_type: None,
             timestamp: None,
+            score: None,
         }
     }
 
@@ -155,6 +159,7 @@ mod tests {
             status_code: Some(200),
             mime_type: Some("text/html".to_string()),
             timestamp: Some("20210115120000".to_string()),
+            score: None,
         }
     }
 

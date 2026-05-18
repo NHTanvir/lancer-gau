@@ -161,6 +161,7 @@ impl CommonCrawlProvider {
                         status_code,
                         mime_type,
                         timestamp,
+                        score: None,
                     });
                 }
                 Err(e) => {

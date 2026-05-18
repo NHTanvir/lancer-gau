@@ -2,8 +2,10 @@
 //!
 //! Entry point: parse CLI, load config, run providers, print results.
 
+mod ai_rank;
 mod config;
 mod dedup;
+mod diff;
 mod filters;
 mod output;
 mod providers;
@@ -116,6 +118,14 @@ struct Cli {
     /// Filter URLs against regex (exclude matches)
     #[arg(long)]
     fr: Option<String>,
+
+    /// AI-rank URLs by exploit potential (requires ANTHROPIC_API_KEY env var)
+    #[arg(long)]
+    ai_rank: bool,
+
+    /// Diff mode: emit only URLs not in the previous run file
+    #[arg(long, value_name = "PATH")]
+    diff: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +209,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref fr) = cli.fr {
         cfg.filter_regex = Some(fr.clone());
     }
+    if cli.ai_rank {
+        cfg.ai_rank = true;
+    }
+    if let Some(ref d) = cli.diff {
+        cfg.diff = Some(d.clone());
+    }
 
     // Warn about flags that are accepted but not yet fully implemented.
     if cfg.parameters {
@@ -244,10 +260,38 @@ async fn main() -> anyhow::Result<()> {
         .filter(|r| filter.accept(r))
         .collect();
 
+    // ---- apply diff mode ----
+    let filtered = if let Some(ref diff_path) = cfg.diff {
+        let previous = diff::load_previous(diff_path)?;
+        let kept = diff::keep_new(filtered, &previous);
+        tracing::info!(
+            "diff: kept {} new URLs (previous file had {} entries)",
+            kept.len(),
+            previous.len()
+        );
+        kept
+    } else {
+        filtered
+    };
+
+    // ---- apply AI ranking ----
+    let mut final_records = filtered;
+    if cfg.ai_rank {
+        let scored = ai_rank::rank_urls(final_records, &client).await?;
+        final_records = scored
+            .into_iter()
+            .map(|s| {
+                let mut r = s.record;
+                r.score = Some(s.score);
+                r
+            })
+            .collect();
+    }
+
     // ---- output records ----
     let mut writer = output::make_writer(cfg.output_file.as_deref(), cfg.json)?;
     let write_result: std::io::Result<()> = (|| {
-        for record in &filtered {
+        for record in &final_records {
             writer.write_record(record)?;
         }
         Ok(())
@@ -262,7 +306,7 @@ async fn main() -> anyhow::Result<()> {
             &result.stats,
             result.unique_count,
             result.duplicate_count,
-            filtered.len(),
+            final_records.len(),
         );
     }
 

@@ -176,6 +176,7 @@ impl WaybackProvider {
                     status_code,
                     mime_type,
                     timestamp,
+                    score: None,
                 });
             }
         }
