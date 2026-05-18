@@ -246,10 +246,15 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- output records ----
     let mut writer = output::make_writer(cfg.output_file.as_deref(), cfg.json)?;
-    for record in &filtered {
-        writer.write_record(record)?;
-    }
-    writer.flush()?;
+    let write_result: std::io::Result<()> = (|| {
+        for record in &filtered {
+            writer.write_record(record)?;
+        }
+        Ok(())
+    })();
+    let flush_result = writer.flush();
+    write_result?;
+    flush_result?;
 
     // ---- verbose stats ----
     if cfg.verbose {

@@ -111,14 +111,12 @@ pub fn report_stats(
     duplicate_count: usize,
     output_count: usize,
 ) {
-    let dropped = unique_count.saturating_sub(output_count);
-
-    let mut sorted: Vec<(&String, &usize)> = stats.by_provider.iter().collect();
+    let mut sorted: Vec<_> = stats.by_provider.iter().collect();
     sorted.sort_by_key(|(k, _)| k.as_str());
-
-    for (provider, count) in &sorted {
+    for (provider, count) in sorted {
         tracing::info!("provider {}: {} URLs", provider, count);
     }
+    tracing::info!("raw: {} URLs fetched total", stats.total());
     tracing::info!(
         "dedup: {} unique URLs ({} duplicates removed)",
         unique_count,
@@ -127,9 +125,8 @@ pub fn report_stats(
     tracing::info!(
         "filters: {} records after filter ({} dropped)",
         output_count,
-        dropped
+        unique_count.saturating_sub(output_count)
     );
-    tracing::info!("total: {} URLs emitted", output_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,17 +244,26 @@ mod tests {
 
     // ---- make_writer -------------------------------------------------------
 
-    #[test]
-    fn make_writer_none_path_stdout_text() {
-        // Just verify it doesn't error — we can't easily capture stdout in tests
-        let result = make_writer(None, false);
-        assert!(result.is_ok());
+    fn make_test_record() -> UrlRecord {
+        make_record_minimal()
     }
 
     #[test]
-    fn make_writer_none_path_stdout_json() {
-        let result = make_writer(None, true);
-        assert!(result.is_ok());
+    fn make_writer_stdout_accepts_records() {
+        let mut w = make_writer(None, false).unwrap();
+        let rec = make_test_record();
+        // Just verify no panic when writing to stdout-backed writer
+        // (output goes to the test runner's stdout)
+        let _ = w.write_record(&rec);
+        let _ = w.flush();
+    }
+
+    #[test]
+    fn make_writer_unwritable_path_returns_error() {
+        // Use a path with an obviously-invalid component to force File::create failure
+        let bad_path = "/this/path/does/not/exist/output.txt";
+        let result = make_writer(Some(bad_path), false);
+        assert!(result.is_err(), "expected error for unwritable path");
     }
 
     #[test]
