@@ -238,12 +238,14 @@ async fn main() -> anyhow::Result<()> {
     //  to stdout but honour the --json flag format.)
     let use_json = cfg.json;
 
+    // ---- build filter early (fail fast on bad regex / invalid date args) ----
+    let filter = Filter::from_config(&cfg)?;
+
     // ---- run providers concurrently via runner ----
     debug!("Starting concurrent runner for {} domain(s)", domains.len());
     let result = runner::run(&domains, &cfg, &client).await?;
 
     // ---- apply filters ----
-    let filter = Filter::from_config(&cfg)?;
     let filtered: Vec<_> = result
         .records
         .into_iter()

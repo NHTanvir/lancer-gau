@@ -28,6 +28,22 @@ pub struct Filter {
 impl Filter {
     /// Build a `Filter` from the resolved configuration.
     pub fn from_config(cfg: &Config) -> anyhow::Result<Self> {
+        if let Some(ref f) = cfg.from {
+            if f.len() != 6 || !f.bytes().all(|b| b.is_ascii_digit()) {
+                anyhow::bail!("--from must be YYYYMM (6 digits), got {:?}", f);
+            }
+        }
+        if let Some(ref t) = cfg.to {
+            if t.len() != 6 || !t.bytes().all(|b| b.is_ascii_digit()) {
+                anyhow::bail!("--to must be YYYYMM (6 digits), got {:?}", t);
+            }
+        }
+        if let (Some(f), Some(t)) = (&cfg.from, &cfg.to) {
+            if f > t {
+                anyhow::bail!("--from ({}) must be <= --to ({})", f, t);
+            }
+        }
+
         let blacklist_exts: HashSet<String> = cfg
             .blacklist
             .iter()
@@ -62,14 +78,14 @@ impl Filter {
         let match_regex = cfg
             .match_regex
             .as_deref()
-            .map(|p| regex::Regex::new(p))
+            .map(regex::Regex::new)
             .transpose()
             .map_err(|e| anyhow::anyhow!("Invalid --mr regex: {}", e))?;
 
         let filter_regex = cfg
             .filter_regex
             .as_deref()
-            .map(|p| regex::Regex::new(p))
+            .map(regex::Regex::new)
             .transpose()
             .map_err(|e| anyhow::anyhow!("Invalid --fr regex: {}", e))?;
 
@@ -184,6 +200,10 @@ impl Filter {
 
 /// Extract the lowercased file extension from a URL, ignoring query strings
 /// and fragments.
+///
+/// Note: URLs without a path component (e.g. "https://example.com") will
+/// return the TLD ("com") as the extension. This is intentional and matches
+/// the behavior of upstream gau.
 fn extract_extension(url: &str) -> Option<String> {
     // Strip query string
     let path = url.split('?').next().unwrap_or(url);
@@ -587,6 +607,17 @@ mod tests {
         let mut rec = make_record("https://example.com/");
         rec.mime_type = Some("text/html; charset=utf-8".to_string());
         assert!(filter.accept(&rec));
+    }
+
+    #[test]
+    fn match_mime_partial_type_does_not_match() {
+        let mut cfg = Config::default();
+        cfg.match_mime = vec!["json".to_string()];
+        let filter = Filter::from_config(&cfg).unwrap();
+        let mut rec = make_record("https://example.com/api");
+        rec.mime_type = Some("application/json".to_string());
+        // partial "json" must NOT match "application/json" — full type required
+        assert!(!filter.accept(&rec));
     }
 
     // -----------------------------------------------------------------------
