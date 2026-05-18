@@ -13,15 +13,8 @@ use crate::providers::UrlRecord;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Load the set of normalized URLs from a previous run file.
-///
-/// Format is auto-detected:
-/// - If the first non-empty line parses as JSON, the file is treated as
-///   JSON-lines and `.url` is extracted from each object.
-/// - Otherwise the file is treated as plain text; each line is stripped of a
-///   leading numeric score (e.g. `"8 https://..."`) if present.
-///
-/// Lines that cannot be parsed are silently skipped.
+/// Loads URLs from a previous run file (plain text or JSON-lines, auto-detected).
+/// IO errors propagate; lines that fail to parse are silently skipped.
 pub fn load_previous(path: &str) -> anyhow::Result<HashSet<String>> {
     let file = std::fs::File::open(path)
         .map_err(|e| anyhow::anyhow!("diff: cannot open previous file '{}': {}", path, e))?;

@@ -59,7 +59,7 @@ pub async fn rank_urls(
     for (batch_idx, chunk) in records.chunks(BATCH_SIZE).enumerate() {
         let scores = rank_batch(client, &api_key, chunk, batch_idx).await;
         for (i, record) in chunk.iter().enumerate() {
-            let score = scores.as_ref().map(|s| *s.get(i).unwrap_or(&0)).unwrap_or(0);
+            let score = *scores.get(i).unwrap_or(&0);
             scored.push(ScoredRecord {
                 record: record.clone(),
                 score,
@@ -67,7 +67,7 @@ pub async fn rank_urls(
         }
     }
 
-    // Sort highest score first (stable so equal scores keep insertion order).
+    // Sort highest score first.
     scored.sort_by(|a, b| b.score.cmp(&a.score));
 
     Ok(scored)
@@ -78,13 +78,13 @@ pub async fn rank_urls(
 // ---------------------------------------------------------------------------
 
 /// Rank a single batch of URLs. Returns a Vec of scores aligned to `batch`.
-/// On any error, logs a warning and returns `Ok(vec![0; batch.len()])`.
+/// On any error, logs a warning and returns `vec![0; batch.len()]`.
 async fn rank_batch(
     client: &reqwest::Client,
     api_key: &str,
     batch: &[UrlRecord],
     batch_idx: usize,
-) -> Result<Vec<u8>, ()> {
+) -> Vec<u8> {
     let prompt = build_prompt(batch);
 
     match call_anthropic(client, api_key, &prompt).await {
@@ -98,20 +98,20 @@ async fn rank_batch(
                 );
                 let mut padded = scores;
                 padded.resize(batch.len(), 0);
-                Ok(padded)
+                padded
             } else {
-                Ok(scores)
+                scores
             }
         }
         Err(e) => {
             warn!(batch = batch_idx, error = %e, "ai_rank: batch failed — assigning score 0");
-            Err(())
+            vec![0; batch.len()]
         }
     }
 }
 
 /// Build the ranking prompt for a batch of URLs.
-pub fn build_prompt(batch: &[UrlRecord]) -> String {
+fn build_prompt(batch: &[UrlRecord]) -> String {
     let mut prompt = String::from(
         "Rank these URLs by bug bounty exploit potential (1-10). Score factors:\n\
         - 10: admin/debug/internal paths, file upload endpoints, deprecated API versions\n\
@@ -180,16 +180,11 @@ async fn send_with_retry(
         warn!(retry_after, "ai_rank: 429 from Anthropic — waiting before retry");
         tokio::time::sleep(Duration::from_secs(retry_after)).await;
 
-        return do_request(client, api_key, body).await;
+        let retry_resp = do_request(client, api_key, body).await?;
+        return check_success(retry_resp).await;
     }
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Anthropic API error {}: {}", status, body_text);
-    }
-
-    Ok(resp)
+    check_success(resp).await
 }
 
 async fn do_request(
@@ -209,16 +204,45 @@ async fn do_request(
     Ok(resp)
 }
 
+/// Return `Ok(resp)` if the status is successful, otherwise surface the error.
+async fn check_success(resp: reqwest::Response) -> anyhow::Result<reqwest::Response> {
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Anthropic API error {}: {}", status, body_text);
+    }
+    Ok(resp)
+}
+
+/// Extract the first balanced `[...]` substring from `text` using bracket-depth
+/// counting. This avoids the ambiguity when there are multiple `]` characters in
+/// the surrounding prose.
+fn extract_array_str(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = text.find('[')?;
+    let mut depth = 0i32;
+    for (i, &b) in bytes[start..].iter().enumerate() {
+        match b {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=start + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Parse a JSON array of integers from the model's text response.
 /// Accepts both a bare array `[8, 6, 3]` and text that contains one.
 fn parse_score_array(text: &str) -> anyhow::Result<Vec<u8>> {
-    // Try to extract just the JSON array from the text (model might add whitespace).
     let trimmed = text.trim();
 
-    // Find the first '[' and last ']' to extract the array.
-    let start = trimmed.find('[').context("no JSON array found in response")?;
-    let end = trimmed.rfind(']').context("no closing ']' in response")?;
-    let array_str = &trimmed[start..=end];
+    let array_str =
+        extract_array_str(trimmed).context("no JSON array found in response")?;
 
     let values: Vec<serde_json::Value> =
         serde_json::from_str(array_str).context("failed to parse score array as JSON")?;
@@ -340,5 +364,14 @@ mod tests {
     #[test]
     fn parse_malformed_json_returns_error() {
         assert!(parse_score_array("[1, 2, abc]").is_err());
+    }
+
+    #[test]
+    fn parse_prose_with_extra_brackets_extracts_first_array() {
+        // The model returns a second bracket group in the trailing prose;
+        // only the first balanced array should be extracted.
+        let text = "Here are the scores [8, 6, 3] for the URLs [listed above].";
+        let scores = parse_score_array(text).unwrap();
+        assert_eq!(scores, vec![8, 6, 3]);
     }
 }
