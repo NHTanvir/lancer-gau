@@ -22,6 +22,7 @@ async-trait = "0.1"
 cuckoofilter = "0.5"
 url = "2.5"
 redb = "2"
+regex = "1"
 
 [profile.release]
 opt-level = 3

@@ -82,6 +82,12 @@ pub struct Config {
     #[serde(default)]
     pub to: Option<String>,
 
+    #[serde(default)]
+    pub match_regex: Option<String>,
+
+    #[serde(default)]
+    pub filter_regex: Option<String>,
+
     // Sub-configs
     #[serde(default)]
     pub urlscan: UrlScanConfig,
@@ -142,6 +148,8 @@ impl Default for Config {
             output_file: None,
             from: None,
             to: None,
+            match_regex: None,
+            filter_regex: None,
             urlscan: UrlScanConfig::default(),
             otx: OtxConfig::default(),
         }

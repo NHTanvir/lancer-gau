@@ -4,6 +4,7 @@
 
 mod config;
 mod dedup;
+mod filters;
 mod providers;
 mod runner;
 
@@ -14,6 +15,7 @@ use clap::Parser;
 use tracing::debug;
 
 use config::{load_config, parse_codes, split_csv, Config};
+use filters::Filter;
 use providers::UrlRecord;
 
 // ---------------------------------------------------------------------------
@@ -106,6 +108,14 @@ struct Cli {
     /// Include file path parameters in output
     #[arg(long)]
     fp: bool,
+
+    /// Match URLs against regex (only emit matches)
+    #[arg(long)]
+    mr: Option<String>,
+
+    /// Filter URLs against regex (exclude matches)
+    #[arg(long)]
+    fr: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +193,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref ft) = cli.ft {
         cfg.filter_mime = split_csv(ft);
     }
+    if let Some(ref mr) = cli.mr {
+        cfg.match_regex = Some(mr.clone());
+    }
+    if let Some(ref fr) = cli.fr {
+        cfg.filter_regex = Some(fr.clone());
+    }
 
     // Warn about flags that are accepted but not yet fully implemented.
     if cfg.parameters {
@@ -226,11 +242,17 @@ async fn main() -> anyhow::Result<()> {
     debug!("Starting concurrent runner for {} domain(s)", domains.len());
     let result = runner::run(&domains, &cfg, &client).await?;
 
+    // ---- apply filters ----
+    let filter = Filter::from_config(&cfg)?;
+    let filtered: Vec<_> = result
+        .records
+        .into_iter()
+        .filter(|r| filter.accept(r))
+        .collect();
+
     // ---- output records ----
-    for rec in &result.records {
-        if should_output(rec, &cfg) {
-            print_record(rec, use_json);
-        }
+    for rec in &filtered {
+        print_record(rec, use_json);
     }
 
     // ---- verbose stats ----
@@ -243,6 +265,7 @@ async fn main() -> anyhow::Result<()> {
         let total = result.stats.total();
         tracing::info!(total = total, "total URLs");
         tracing::info!("dedup: {} unique URLs ({} duplicates removed)", result.unique_count, result.duplicate_count);
+        tracing::info!("filters: {} records after filter ({} dropped)", filtered.len(), result.unique_count - filtered.len());
     }
 
     Ok(())
@@ -268,56 +291,6 @@ fn build_client(cfg: &Config) -> anyhow::Result<reqwest::Client> {
     }
 
     Ok(builder.build()?)
-}
-
-/// Determine whether a `UrlRecord` passes the blacklist / match / filter
-/// criteria defined in `cfg`.
-fn should_output(rec: &UrlRecord, cfg: &Config) -> bool {
-    // Extension blacklist
-    if !cfg.blacklist.is_empty() {
-        // Strip query string before checking extension
-        let path = rec.url.split('?').next().unwrap_or(&rec.url);
-        let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
-        if cfg.blacklist.iter().any(|b| b.eq_ignore_ascii_case(&ext)) {
-            return false;
-        }
-    }
-
-    // Match status codes (if any specified — URL must match at least one)
-    if !cfg.match_codes.is_empty() {
-        match rec.status_code {
-            Some(code) if cfg.match_codes.contains(&code) => {}
-            _ => return false,
-        }
-    }
-
-    // Filter (exclude) status codes
-    if !cfg.filter_codes.is_empty() {
-        if let Some(code) = rec.status_code {
-            if cfg.filter_codes.contains(&code) {
-                return false;
-            }
-        }
-    }
-
-    // Match MIME types
-    if !cfg.match_mime.is_empty() {
-        match &rec.mime_type {
-            Some(mt) if cfg.match_mime.iter().any(|m| mt.contains(m.as_str())) => {}
-            _ => return false,
-        }
-    }
-
-    // Filter MIME types
-    if !cfg.filter_mime.is_empty() {
-        if let Some(ref mt) = rec.mime_type {
-            if cfg.filter_mime.iter().any(|m| mt.contains(m.as_str())) {
-                return false;
-            }
-        }
-    }
-
-    true
 }
 
 /// Print a single `UrlRecord` to stdout (plain text or JSON-lines).
