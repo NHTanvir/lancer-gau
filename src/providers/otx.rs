@@ -58,16 +58,9 @@ impl OtxProvider {
             ("page", page.to_string()),
         ];
 
-        let mut last_err: Option<anyhow::Error> = None;
+        let mut attempt = 0u32;
 
-        for attempt in 0..=self.retries {
-            if attempt > 0 {
-                let shift = (attempt - 1).min(62);
-                let backoff = Duration::from_millis(100 * (1u64 << shift));
-                let backoff = backoff.min(Duration::from_secs(30));
-                tokio::time::sleep(backoff).await;
-            }
-
+        loop {
             let mut request = client.get(url).query(params);
 
             if self.random_agent {
@@ -83,6 +76,7 @@ impl OtxProvider {
                     let status = resp.status();
 
                     // Handle rate-limiting: sleep Retry-After seconds then retry.
+                    // Do NOT count this against `attempt`.
                     if status.as_u16() == 429 {
                         let retry_after = resp
                             .headers()
@@ -96,33 +90,48 @@ impl OtxProvider {
                             "OTX: rate-limited (429); sleeping before retry"
                         );
                         tokio::time::sleep(Duration::from_secs(retry_after)).await;
-                        // Do NOT count this against `attempt`; just continue the loop.
-                        last_err = Some(anyhow::anyhow!("HTTP 429 rate-limited"));
                         continue;
                     }
 
-                    if !status.is_success() {
-                        last_err = Some(anyhow::anyhow!("HTTP {status}"));
-                        continue;
+                    if status.is_success() {
+                        return resp
+                            .json::<serde_json::Value>()
+                            .await
+                            .map_err(|e| anyhow::Error::from(e).context("JSON parse error"))
+                            .context(format!("OTX fetch failed after retries: {url}?page={page}"));
                     }
 
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(val) => return Ok(val),
-                        Err(e) => {
-                            last_err = Some(anyhow::Error::from(e).context("JSON parse error"));
-                            continue;
-                        }
+                    // Non-200, non-429: count against retry budget.
+                    attempt += 1;
+                    if attempt > self.retries {
+                        return Err(anyhow::anyhow!(
+                            "OTX fetch failed after {} retries: HTTP {} — {url}?page={page}",
+                            self.retries,
+                            status
+                        ));
                     }
+                    let shift = (attempt - 1).min(62);
+                    let backoff =
+                        Duration::from_millis(100 * (1u64 << shift)).min(Duration::from_secs(30));
+                    tokio::time::sleep(backoff).await;
                 }
                 Err(e) => {
-                    last_err = Some(anyhow::Error::from(e).context("request error"));
-                    continue;
+                    // Network error: count against retry budget.
+                    attempt += 1;
+                    if attempt > self.retries {
+                        return Err(anyhow::anyhow!(
+                            "OTX fetch failed after {} retries: {} — {url}?page={page}",
+                            self.retries,
+                            e
+                        ));
+                    }
+                    let shift = (attempt - 1).min(62);
+                    let backoff =
+                        Duration::from_millis(100 * (1u64 << shift)).min(Duration::from_secs(30));
+                    tokio::time::sleep(backoff).await;
                 }
             }
         }
-
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error")))
-            .context(format!("OTX fetch failed after retries: {url}?page={page}"))
     }
 
     /// Parse one OTX page response into `UrlRecord`s.
