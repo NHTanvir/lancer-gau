@@ -8,7 +8,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use rand::seq::SliceRandom;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::{Provider, UrlRecord, USER_AGENTS};
 
@@ -254,6 +254,7 @@ impl CommonCrawlProvider {
             ("url", url_param.to_string()),
             ("output", "json".to_string()),
             ("showNumPages", "true".to_string()),
+            ("pageSize", "15000".to_string()),
         ];
 
         let text = self
@@ -294,6 +295,12 @@ impl Provider for CommonCrawlProvider {
         // Common Crawl always uses *.domain — subdomains are implicit.
         let url_param = format!("*.{}", domain);
 
+        if !_include_subs {
+            debug!(
+                "Common Crawl always queries *.{domain} — subdomains included regardless of --subs flag"
+            );
+        }
+
         // 1. Discover latest index.
         let index_id = self
             .latest_index(client)
@@ -302,27 +309,27 @@ impl Provider for CommonCrawlProvider {
 
         let idx_url = Self::index_url(&index_id);
 
-        // 2. Fetch page 0 to seed results.
-        let mut all_records: Vec<UrlRecord> = Vec::new();
-
-        if let Some(text) = self.fetch_page(client, &idx_url, &url_param, 0).await {
-            all_records.extend(self.parse_ndjson_page(&text));
-        }
-
-        // 3. Find out how many pages there are.
+        // 2. Find out how many pages there are.
         let num_pages = match self
             .fetch_num_pages(client, &idx_url, &url_param)
             .await
         {
             Ok(n) => n,
             Err(e) => {
-                warn!(error = %e, "Common Crawl: could not determine page count; using only page 0");
-                return Ok(all_records);
+                warn!(error = %e, "Common Crawl: could not determine page count; skipping provider");
+                return Ok(Vec::new());
             }
         };
 
-        // 4. Fetch remaining pages (page 0 already done above).
-        for page in 1..num_pages {
+        // 3. Nothing indexed for this domain — return early.
+        if num_pages == 0 {
+            return Ok(Vec::new());
+        }
+
+        // 4. Fetch all pages (0-based).
+        let mut all_records: Vec<UrlRecord> = Vec::new();
+
+        for page in 0..num_pages {
             if let Some(text) = self.fetch_page(client, &idx_url, &url_param, page).await {
                 all_records.extend(self.parse_ndjson_page(&text));
             }
