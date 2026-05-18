@@ -1,6 +1,7 @@
 //! Provider trait and shared types for lancer-gau.
 
 use async_trait::async_trait;
+use rand::seq::SliceRandom;
 
 /// Shared browser User-Agent strings used when `--random-agent` is set.
 /// Both the Wayback and Common Crawl providers use this list.
@@ -27,6 +28,11 @@ pub struct UrlRecord {
     pub mime_type: Option<String>,
     /// ISO-ish timestamp string from provider metadata.
     pub timestamp: Option<String>,
+}
+
+/// Return a random user-agent string from the shared list.
+pub fn random_ua(rng: &mut impl rand::Rng) -> &'static str {
+    USER_AGENTS.choose(rng).copied().unwrap_or("Mozilla/5.0")
 }
 
 /// Every URL source implements this trait.

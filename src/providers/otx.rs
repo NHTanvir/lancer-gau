@@ -7,11 +7,10 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use super::{Provider, UrlRecord, USER_AGENTS};
+use super::{Provider, UrlRecord};
 
 const OTX_BASE: &str = "https://otx.alienvault.com/api/v1/indicators/hostname";
 const PAGE_LIMIT: usize = 500;
@@ -30,14 +29,6 @@ impl OtxProvider {
             random_agent,
             apikey,
         }
-    }
-
-    fn random_ua(&self) -> &'static str {
-        let mut rng = rand::thread_rng();
-        USER_AGENTS
-            .choose(&mut rng)
-            .copied()
-            .unwrap_or(USER_AGENTS[0])
     }
 
     /// Build the endpoint URL for a given domain.
@@ -59,12 +50,19 @@ impl OtxProvider {
         ];
 
         let mut attempt = 0u32;
+        let mut rate_limit_count = 0u32;
 
         loop {
+            let ua = if self.random_agent {
+                let mut rng = rand::thread_rng();
+                Some(super::random_ua(&mut rng))
+            } else {
+                None
+            };
             let mut request = client.get(url).query(params);
 
-            if self.random_agent {
-                request = request.header(reqwest::header::USER_AGENT, self.random_ua());
+            if let Some(agent) = ua {
+                request = request.header(reqwest::header::USER_AGENT, agent);
             }
 
             if !self.apikey.is_empty() {
@@ -84,9 +82,18 @@ impl OtxProvider {
                             .and_then(|v| v.to_str().ok())
                             .and_then(|s| s.parse::<u64>().ok())
                             .unwrap_or(60);
+                        // Drain body to allow socket reuse on keep-alive connections.
+                        let _ = resp.bytes().await;
+                        rate_limit_count += 1;
+                        if rate_limit_count > 10 {
+                            return Err(anyhow::anyhow!(
+                                "OTX rate limited more than 10 times in a row; giving up"
+                            ));
+                        }
                         warn!(
                             page = page,
                             retry_after_secs = retry_after,
+                            rate_limit_count = rate_limit_count,
                             "OTX: rate-limited (429); sleeping before retry"
                         );
                         tokio::time::sleep(Duration::from_secs(retry_after)).await;
@@ -208,6 +215,10 @@ impl Provider for OtxProvider {
         _include_subs: bool,
         client: &reqwest::Client,
     ) -> anyhow::Result<Vec<UrlRecord>> {
+        if domain.contains('/') || domain.contains('\\') || domain.contains("..") || domain.contains(' ') {
+            return Err(anyhow::anyhow!("Invalid domain: {}", domain));
+        }
+
         // OTX hostname search returns results for the domain and its subdomains
         // naturally, so no URL change is needed for the --subs flag.
         let endpoint = Self::endpoint(domain);

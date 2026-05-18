@@ -8,11 +8,10 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use super::{Provider, UrlRecord, USER_AGENTS};
+use super::{Provider, UrlRecord};
 
 const URLSCAN_ENDPOINT: &str = "https://urlscan.io/api/v1/search/";
 const PAGE_SIZE: usize = 10_000;
@@ -31,14 +30,6 @@ impl UrlScanProvider {
             random_agent,
             apikey,
         }
-    }
-
-    fn random_ua(&self) -> &'static str {
-        let mut rng = rand::thread_rng();
-        USER_AGENTS
-            .choose(&mut rng)
-            .copied()
-            .unwrap_or(USER_AGENTS[0])
     }
 
     /// Build the `q` parameter value for a domain search.
@@ -79,8 +70,14 @@ impl UrlScanProvider {
         search_after: Option<&str>,
     ) -> anyhow::Result<serde_json::Value> {
         let mut last_err: Option<anyhow::Error> = None;
+        let mut rate_limit_count = 0u32;
+        let mut attempt = 0u32;
 
-        for attempt in 0..=self.retries {
+        loop {
+            if attempt > self.retries {
+                break;
+            }
+
             if attempt > 0 {
                 let shift = (attempt - 1).min(62);
                 let backoff = Duration::from_millis(100 * (1u64 << shift));
@@ -97,10 +94,16 @@ impl UrlScanProvider {
                 params.push(("search_after", cursor.to_string()));
             }
 
+            let ua = if self.random_agent {
+                let mut rng = rand::thread_rng();
+                Some(super::random_ua(&mut rng))
+            } else {
+                None
+            };
             let mut request = client.get(URLSCAN_ENDPOINT).query(&params);
 
-            if self.random_agent {
-                request = request.header(reqwest::header::USER_AGENT, self.random_ua());
+            if let Some(agent) = ua {
+                request = request.header(reqwest::header::USER_AGENT, agent);
             }
 
             if !self.apikey.is_empty() {
@@ -110,20 +113,51 @@ impl UrlScanProvider {
             match request.send().await {
                 Ok(resp) => {
                     let status = resp.status();
+
+                    // Handle rate-limiting: sleep Retry-After seconds then retry.
+                    // Do NOT count this against `attempt`.
+                    if status.as_u16() == 429 {
+                        let retry_after = resp
+                            .headers()
+                            .get(reqwest::header::RETRY_AFTER)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(60);
+                        // Drain body to allow socket reuse on keep-alive connections.
+                        let _ = resp.bytes().await;
+                        rate_limit_count += 1;
+                        if rate_limit_count > 10 {
+                            return Err(anyhow::anyhow!(
+                                "URLScan rate limited more than 10 times in a row; giving up"
+                            ));
+                        }
+                        warn!(
+                            retry_after_secs = retry_after,
+                            rate_limit_count = rate_limit_count,
+                            "URLScan: rate-limited (429); sleeping before retry"
+                        );
+                        tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                        // Do NOT increment attempt — retry without consuming retry budget.
+                        continue;
+                    }
+
                     if !status.is_success() {
                         last_err = Some(anyhow::anyhow!("HTTP {status}"));
+                        attempt += 1;
                         continue;
                     }
                     match resp.json::<serde_json::Value>().await {
                         Ok(val) => return Ok(val),
                         Err(e) => {
                             last_err = Some(anyhow::Error::from(e).context("JSON parse error"));
+                            attempt += 1;
                             continue;
                         }
                     }
                 }
                 Err(e) => {
                     last_err = Some(anyhow::Error::from(e).context("request error"));
+                    attempt += 1;
                     continue;
                 }
             }
@@ -139,12 +173,11 @@ impl UrlScanProvider {
     /// Parse a URLScan search response into `UrlRecord`s.
     /// Returns `(records, Option<next_cursor>)`.
     /// `next_cursor` is `None` when this is the last page.
-    pub fn parse_response(
-        value: &serde_json::Value,
-    ) -> anyhow::Result<(Vec<UrlRecord>, Option<String>)> {
+    /// Malformed entries are silently skipped.
+    pub fn parse_response(value: &serde_json::Value) -> (Vec<UrlRecord>, Option<String>) {
         let results = match value.get("results").and_then(|v| v.as_array()) {
             Some(arr) => arr,
-            None => return Ok((vec![], None)),
+            None => return (vec![], None),
         };
 
         let is_last_page = results.len() < PAGE_SIZE;
@@ -198,7 +231,7 @@ impl UrlScanProvider {
             Self::extract_cursor(results)
         };
 
-        Ok((records, cursor))
+        (records, cursor)
     }
 }
 
@@ -235,7 +268,7 @@ impl Provider for UrlScanProvider {
                 }
             };
 
-            let (records, next_cursor) = UrlScanProvider::parse_response(&value)?;
+            let (records, next_cursor) = UrlScanProvider::parse_response(&value);
             let count = records.len();
             all_records.extend(records);
 
@@ -290,7 +323,7 @@ mod tests {
             "has_more": false
         });
 
-        let (records, cursor) = UrlScanProvider::parse_response(&val).unwrap();
+        let (records, cursor) = UrlScanProvider::parse_response(&val);
         assert_eq!(records.len(), 1);
         assert!(cursor.is_none(), "1 < 10000 => no cursor");
 
@@ -305,7 +338,7 @@ mod tests {
     #[test]
     fn parse_response_missing_results_key() {
         let val = json!({ "total": 0 });
-        let (records, cursor) = UrlScanProvider::parse_response(&val).unwrap();
+        let (records, cursor) = UrlScanProvider::parse_response(&val);
         assert!(records.is_empty());
         assert!(cursor.is_none());
     }
@@ -313,7 +346,7 @@ mod tests {
     #[test]
     fn parse_response_empty_results() {
         let val = json!({ "results": [] });
-        let (records, cursor) = UrlScanProvider::parse_response(&val).unwrap();
+        let (records, cursor) = UrlScanProvider::parse_response(&val);
         assert!(records.is_empty());
         assert!(cursor.is_none());
     }
@@ -337,7 +370,7 @@ mod tests {
             ]
         });
 
-        let (records, _) = UrlScanProvider::parse_response(&val).unwrap();
+        let (records, _) = UrlScanProvider::parse_response(&val);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].url, "https://example.com/ok");
     }
@@ -355,7 +388,7 @@ mod tests {
             ]
         });
 
-        let (records, _) = UrlScanProvider::parse_response(&val).unwrap();
+        let (records, _) = UrlScanProvider::parse_response(&val);
         assert_eq!(records[0].status_code, Some(404));
     }
 
@@ -431,7 +464,7 @@ mod tests {
             ]
         });
 
-        let (records, cursor) = UrlScanProvider::parse_response(&val).unwrap();
+        let (records, cursor) = UrlScanProvider::parse_response(&val);
         assert_eq!(records.len(), 1);
         assert!(cursor.is_none(), "1 < 10000 means last page, cursor must be None");
     }

@@ -6,11 +6,10 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use super::{Provider, UrlRecord, USER_AGENTS};
+use super::{Provider, UrlRecord};
 
 const COLLINFO_URL: &str = "https://index.commoncrawl.org/collinfo.json";
 const CC_INDEX_BASE: &str = "https://index.commoncrawl.org";
@@ -34,15 +33,6 @@ impl CommonCrawlProvider {
         }
     }
 
-    /// Return a random user-agent string from the shared list.
-    fn random_ua(&self) -> &'static str {
-        let mut rng = rand::thread_rng();
-        USER_AGENTS
-            .choose(&mut rng)
-            .copied()
-            .unwrap_or(USER_AGENTS[0])
-    }
-
     /// Perform one HTTP GET with exponential-backoff retries.
     /// Returns the raw response text.
     async fn fetch_text(
@@ -61,10 +51,16 @@ impl CommonCrawlProvider {
                 tokio::time::sleep(backoff).await;
             }
 
+            let ua = if self.random_agent {
+                let mut rng = rand::thread_rng();
+                Some(super::random_ua(&mut rng))
+            } else {
+                None
+            };
             let mut request = client.get(url).query(params);
 
-            if self.random_agent {
-                request = request.header(reqwest::header::USER_AGENT, self.random_ua());
+            if let Some(agent) = ua {
+                request = request.header(reqwest::header::USER_AGENT, agent);
             }
 
             match request.send().await {
@@ -204,9 +200,15 @@ impl CommonCrawlProvider {
                 tokio::time::sleep(backoff).await;
             }
 
+            let ua = if self.random_agent {
+                let mut rng = rand::thread_rng();
+                Some(super::random_ua(&mut rng))
+            } else {
+                None
+            };
             let mut request = client.get(index_url).query(&params);
-            if self.random_agent {
-                request = request.header(reqwest::header::USER_AGENT, self.random_ua());
+            if let Some(agent) = ua {
+                request = request.header(reqwest::header::USER_AGENT, agent);
             }
 
             match request.send().await {

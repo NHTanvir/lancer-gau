@@ -2,10 +2,9 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
-use rand::seq::SliceRandom;
 use std::time::Duration;
 
-use super::{Provider, UrlRecord, USER_AGENTS};
+use super::{Provider, UrlRecord};
 
 const CDX_ENDPOINT: &str = "https://web.archive.org/cdx/search/cdx";
 
@@ -29,12 +28,6 @@ impl WaybackProvider {
             from,
             to,
         }
-    }
-
-    /// Return a random user-agent string from the hardcoded list.
-    fn random_ua(&self) -> &'static str {
-        let mut rng = rand::thread_rng();
-        USER_AGENTS.choose(&mut rng).copied().unwrap_or(USER_AGENTS[0])
     }
 
     /// Perform one CDX request with exponential-backoff retries.
@@ -76,10 +69,16 @@ impl WaybackProvider {
                 tokio::time::sleep(backoff).await;
             }
 
+            let ua = if self.random_agent {
+                let mut rng = rand::thread_rng();
+                Some(super::random_ua(&mut rng))
+            } else {
+                None
+            };
             let mut request = client.get(CDX_ENDPOINT).query(&params);
 
-            if self.random_agent {
-                request = request.header(reqwest::header::USER_AGENT, self.random_ua());
+            if let Some(agent) = ua {
+                request = request.header(reqwest::header::USER_AGENT, agent);
             }
 
             match request.send().await {
