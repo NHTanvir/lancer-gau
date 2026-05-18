@@ -43,4 +43,6 @@ pub trait Provider: Send + Sync {
 }
 
 pub mod commoncrawl;
+pub mod otx;
+pub mod urlscan;
 pub mod wayback;

@@ -13,6 +13,8 @@ use tracing::{debug, warn};
 
 use config::{load_config, parse_codes, split_csv, Config};
 use providers::commoncrawl::CommonCrawlProvider;
+use providers::otx::OtxProvider;
+use providers::urlscan::UrlScanProvider;
 use providers::wayback::WaybackProvider;
 use providers::{Provider, UrlRecord};
 
@@ -262,6 +264,44 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     warn!(domain = %domain, error = %e, "Common Crawl fetch failed");
+                }
+            }
+        }
+
+        if cfg.providers.contains(&"otx".to_string()) {
+            let otx = OtxProvider::new(cfg.retries, cfg.random_agent, cfg.otx.apikey.clone());
+
+            match otx.fetch_urls(domain, cfg.subdomains, &client).await {
+                Ok(records) => {
+                    for rec in records {
+                        if should_output(&rec, &cfg) {
+                            print_record(&rec, use_json);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(domain = %domain, error = %e, "OTX fetch failed");
+                }
+            }
+        }
+
+        if cfg.providers.contains(&"urlscan".to_string()) {
+            let us = UrlScanProvider::new(
+                cfg.retries,
+                cfg.random_agent,
+                cfg.urlscan.apikey.clone(),
+            );
+
+            match us.fetch_urls(domain, cfg.subdomains, &client).await {
+                Ok(records) => {
+                    for rec in records {
+                        if should_output(&rec, &cfg) {
+                            print_record(&rec, use_json);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(domain = %domain, error = %e, "URLScan fetch failed");
                 }
             }
         }
