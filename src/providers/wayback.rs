@@ -25,10 +25,10 @@ const USER_AGENTS: &[&str] = &[
 const CDX_ENDPOINT: &str = "https://web.archive.org/cdx/search/cdx";
 
 pub struct WaybackProvider {
-    pub retries: u32,
-    pub random_agent: bool,
-    pub from: Option<String>,
-    pub to: Option<String>,
+    retries: u32,
+    random_agent: bool,
+    from: Option<String>,
+    to: Option<String>,
 }
 
 impl WaybackProvider {
@@ -85,7 +85,9 @@ impl WaybackProvider {
 
         for attempt in 0..=self.retries {
             if attempt > 0 {
-                let backoff = Duration::from_millis(100 * (1u64 << (attempt - 1)));
+                let shift = (attempt - 1).min(62);
+                let backoff = Duration::from_millis(100 * (1u64 << shift));
+                let backoff = backoff.min(Duration::from_secs(30));
                 tokio::time::sleep(backoff).await;
             }
 
@@ -195,6 +197,61 @@ impl WaybackProvider {
         }
 
         Ok((records, resume_key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_provider() -> WaybackProvider {
+        WaybackProvider::new(3, false, None, None)
+    }
+
+    #[test]
+    fn parse_response_normal() {
+        let provider = make_provider();
+        let value = json!([
+            ["original", "statuscode", "timestamp", "mimetype"],
+            ["https://example.com/page", "200", "20230101120000", "text/html"]
+        ]);
+        let (records, resume_key) = provider.parse_response(value).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].url, "https://example.com/page");
+        assert_eq!(records[0].status_code, Some(200));
+        assert_eq!(records[0].mime_type.as_deref(), Some("text/html"));
+        assert_eq!(records[0].timestamp.as_deref(), Some("20230101120000"));
+        assert!(resume_key.is_none());
+    }
+
+    #[test]
+    fn parse_response_with_resume_key() {
+        let provider = make_provider();
+        let value = json!([
+            ["original", "statuscode", "timestamp", "mimetype"],
+            ["https://example.com/page", "200", "20230101120000", "text/html"],
+            ["abc123resumekey"]
+        ]);
+        let (records, resume_key) = provider.parse_response(value).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(resume_key.as_deref(), Some("abc123resumekey"));
+    }
+
+    #[test]
+    fn parse_response_empty_array() {
+        let provider = make_provider();
+        let (records, resume_key) = provider.parse_response(json!([])).unwrap();
+        assert!(records.is_empty());
+        assert!(resume_key.is_none());
+    }
+
+    #[test]
+    fn parse_response_null() {
+        let provider = make_provider();
+        let (records, resume_key) = provider.parse_response(serde_json::Value::Null).unwrap();
+        assert!(records.is_empty());
+        assert!(resume_key.is_none());
     }
 }
 

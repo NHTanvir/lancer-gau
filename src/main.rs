@@ -183,6 +183,14 @@ async fn main() -> anyhow::Result<()> {
         cfg.filter_mime = split_csv(ft);
     }
 
+    // Warn about flags that are accepted but not yet fully implemented.
+    if cfg.parameters {
+        eprintln!("[warn] --fp (file path parameters) is not yet implemented");
+    }
+    if cfg.output_file.is_some() {
+        eprintln!("[warn] -o/--output file writing is not yet implemented; outputting to stdout");
+    }
+
     debug!(config = ?cfg, "Resolved configuration");
 
     // ---- gather domains ----

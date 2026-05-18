@@ -65,9 +65,6 @@ pub struct Config {
     pub filter_mime: Vec<String>,
 
     #[serde(default)]
-    pub threads_count: usize,
-
-    #[serde(default)]
     pub timeout: u64,
 
     #[serde(default)]
@@ -139,7 +136,6 @@ impl Default for Config {
             filter_codes: vec![],
             match_mime: vec![],
             filter_mime: vec![],
-            threads_count: 0,
             timeout: 60,
             proxy: None,
             random_agent: false,
@@ -236,4 +232,54 @@ pub fn parse_codes(s: &str) -> anyhow::Result<Vec<u16>> {
                 .map_err(|e| anyhow::anyhow!("Invalid status code '{}': {}", p.trim(), e))
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_csv_normal() {
+        assert_eq!(split_csv("a,b,c"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn split_csv_trims_spaces() {
+        assert_eq!(split_csv(" foo , bar , baz "), vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn split_csv_filters_empty() {
+        assert_eq!(split_csv("a,,b"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn split_csv_empty_string() {
+        let result = split_csv("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_codes_valid() {
+        assert_eq!(parse_codes("200,301,404").unwrap(), vec![200, 301, 404]);
+    }
+
+    #[test]
+    fn parse_codes_with_spaces() {
+        assert_eq!(parse_codes("200, 404").unwrap(), vec![200, 404]);
+    }
+
+    #[test]
+    fn parse_codes_invalid_returns_error() {
+        assert!(parse_codes("200,abc").is_err());
+    }
+
+    #[test]
+    fn parse_codes_single() {
+        assert_eq!(parse_codes("200").unwrap(), vec![200u16]);
+    }
 }
