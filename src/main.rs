@@ -3,6 +3,7 @@
 //! Entry point: parse CLI, load config, run providers, print results.
 
 mod config;
+mod dedup;
 mod providers;
 mod runner;
 
@@ -241,6 +242,10 @@ async fn main() -> anyhow::Result<()> {
         }
         let total = result.stats.total();
         tracing::info!(total = total, "total URLs");
+        eprintln!(
+            "[stats] dedup: {} unique URLs ({} duplicates removed)",
+            result.unique_count, result.duplicate_count
+        );
     }
 
     Ok(())

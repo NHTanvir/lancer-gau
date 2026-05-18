@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tracing::warn;
 
 use crate::config::Config;
+use crate::dedup::Dedup;
 use crate::providers::commoncrawl::CommonCrawlProvider;
 use crate::providers::otx::OtxProvider;
 use crate::providers::urlscan::UrlScanProvider;
@@ -36,8 +37,13 @@ impl ProviderStats {
 
 /// The combined result returned by [`run`].
 pub struct RunnerResult {
+    /// Deduplicated URL records.
     pub records: Vec<UrlRecord>,
     pub stats: ProviderStats,
+    /// Number of unique URLs kept after deduplication.
+    pub unique_count: usize,
+    /// Number of duplicate URLs dropped during deduplication.
+    pub duplicate_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,13 +160,16 @@ pub async fn run(
     // Drop the original sender so the channel closes after all tasks finish.
     drop(tx);
 
-    // Drain the channel while tasks run in the background.
+    // Drain the channel while tasks run in the background, deduplicating as we go.
+    let mut dedup = Dedup::new();
     let mut records: Vec<UrlRecord> = Vec::new();
     let mut by_provider: HashMap<String, usize> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
-        *by_provider.entry(msg.provider.to_string()).or_insert(0) += 1;
-        records.push(msg.record);
+        if dedup.check_and_insert(&msg.record.url) {
+            *by_provider.entry(msg.provider.to_string()).or_insert(0) += 1;
+            records.push(msg.record);
+        }
     }
 
     // Wait for all spawned tasks to finish (they should already be done since
@@ -172,6 +181,8 @@ pub async fn run(
     }
 
     Ok(RunnerResult {
+        unique_count: dedup.seen_count(),
+        duplicate_count: dedup.duplicate_count(),
         records,
         stats: ProviderStats { by_provider },
     })
