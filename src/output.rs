@@ -56,7 +56,7 @@ impl<W: Write + Send> OutputWriter for JsonWriter<W> {
         // serde_json honours #[serde(skip_serializing_if = "Option::is_none")]
         // so null fields are omitted automatically.
         let line = serde_json::to_string(record)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         writeln!(self.inner, "{}", line)
     }
 
@@ -119,7 +119,7 @@ pub fn report_stats(
     for (provider, count) in sorted {
         tracing::info!("provider {}: {} URLs", provider, count);
     }
-    tracing::info!("raw: {} URLs fetched total", stats.total());
+    tracing::info!("providers (post-dedup): {} URLs", stats.total());
     tracing::info!(
         "dedup: {} unique URLs ({} duplicates removed)",
         unique_count,

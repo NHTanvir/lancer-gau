@@ -102,7 +102,7 @@ pub fn normalize(url: &str) -> String {
     let path = decode_safe_percent(raw_path);
 
     // Query: preserve order and case; decode safe percent-encodings.
-    let query: Option<String> = parsed.query().map(|q| decode_safe_percent(q));
+    let query: Option<String> = parsed.query().map(decode_safe_percent);
 
     // Re-assemble.
     let mut result = String::with_capacity(url.len());

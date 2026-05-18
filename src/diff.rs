@@ -66,7 +66,7 @@ pub fn load_previous(path: &str) -> anyhow::Result<HashSet<String>> {
     } else {
         // Plain-text mode.
         if let Some(url) = extract_plain_url(&first_line) {
-            set.insert(normalize(&url));
+            set.insert(normalize(url));
         }
         for line_result in lines {
             let line = line_result?;

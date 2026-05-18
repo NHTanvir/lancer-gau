@@ -7,16 +7,32 @@ use std::path::{Path, PathBuf};
 // Per-provider sub-configs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Clone, Deserialize, Serialize, Default)]
 pub struct UrlScanConfig {
     #[serde(default)]
     pub apikey: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+impl std::fmt::Debug for UrlScanConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UrlScanConfig")
+            .field("apikey", &if self.apikey.is_empty() { "<unset>" } else { "<redacted>" })
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize, Default)]
 pub struct OtxConfig {
     #[serde(default)]
     pub apikey: String,
+}
+
+impl std::fmt::Debug for OtxConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtxConfig")
+            .field("apikey", &if self.apikey.is_empty() { "<unset>" } else { "<redacted>" })
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -37,9 +53,6 @@ pub struct Config {
 
     #[serde(default)]
     pub subdomains: bool,
-
-    #[serde(default)]
-    pub parameters: bool,
 
     #[serde(default = "default_providers")]
     pub providers: Vec<String>,
@@ -142,7 +155,6 @@ impl Default for Config {
             verbose: false,
             retries: default_retries(),
             subdomains: false,
-            parameters: false,
             providers: default_providers(),
             blacklist: default_blacklist(),
             json: false,

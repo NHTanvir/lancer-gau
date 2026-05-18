@@ -107,10 +107,6 @@ struct Cli {
     #[arg(long, value_name = "YYYYMM")]
     to: Option<String>,
 
-    /// Include file path parameters in output
-    #[arg(long)]
-    fp: bool,
-
     /// Match URLs against regex (only emit matches)
     #[arg(long)]
     mr: Option<String>,
@@ -188,9 +184,6 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref t) = cli.to {
         cfg.to = Some(t.clone());
     }
-    if cli.fp {
-        cfg.parameters = true;
-    }
     if let Some(ref mc) = cli.mc {
         cfg.match_codes = parse_codes(mc)?;
     }
@@ -216,11 +209,6 @@ async fn main() -> anyhow::Result<()> {
         cfg.diff = Some(d.clone());
     }
 
-    // Warn about flags that are accepted but not yet fully implemented.
-    if cfg.parameters {
-        eprintln!("[warn] --fp (file path parameters) is not yet implemented");
-    }
-
     debug!(config = ?cfg, "Resolved configuration");
 
     // ---- gather domains ----
@@ -232,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
         stdin
             .lock()
             .lines()
-            .filter_map(|l| l.ok())
+            .map_while(Result::ok)
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect()
