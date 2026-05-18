@@ -1,0 +1,263 @@
+//! Wayback CDX provider with full resumeKey pagination.
+
+use anyhow::Context;
+use async_trait::async_trait;
+use rand::seq::SliceRandom;
+use std::time::Duration;
+
+use super::{Provider, UrlRecord};
+
+/// A small, hardcoded list of browser User-Agent strings used when
+/// `--random-agent` is set.
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OPR/110.0.0.0",
+];
+
+const CDX_ENDPOINT: &str = "https://web.archive.org/cdx/search/cdx";
+
+pub struct WaybackProvider {
+    pub retries: u32,
+    pub random_agent: bool,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+impl WaybackProvider {
+    pub fn new(
+        retries: u32,
+        random_agent: bool,
+        from: Option<String>,
+        to: Option<String>,
+    ) -> Self {
+        Self {
+            retries,
+            random_agent,
+            from,
+            to,
+        }
+    }
+
+    /// Return a random user-agent string from the hardcoded list.
+    fn random_ua(&self) -> &'static str {
+        let mut rng = rand::thread_rng();
+        USER_AGENTS.choose(&mut rng).copied().unwrap_or(USER_AGENTS[0])
+    }
+
+    /// Perform one CDX request with exponential-backoff retries.
+    /// Returns the raw JSON value.
+    async fn fetch_page(
+        &self,
+        client: &reqwest::Client,
+        url_param: &str,
+        resume_key: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut params: Vec<(&str, String)> = vec![
+            ("url", url_param.to_string()),
+            ("output", "json".to_string()),
+            ("fl", "original,statuscode,timestamp,mimetype".to_string()),
+            ("collapse", "urlkey".to_string()),
+            ("showResumeKey", "true".to_string()),
+            ("limit", "100000".to_string()),
+        ];
+
+        if let Some(key) = resume_key {
+            params.push(("resumeKey", key.to_string()));
+        }
+        if let Some(f) = from {
+            params.push(("from", f.to_string()));
+        }
+        if let Some(t) = to {
+            params.push(("to", t.to_string()));
+        }
+
+        let mut last_err: Option<anyhow::Error> = None;
+
+        for attempt in 0..=self.retries {
+            if attempt > 0 {
+                let backoff = Duration::from_millis(100 * (1u64 << (attempt - 1)));
+                tokio::time::sleep(backoff).await;
+            }
+
+            let mut request = client.get(CDX_ENDPOINT).query(&params);
+
+            if self.random_agent {
+                request = request.header(reqwest::header::USER_AGENT, self.random_ua());
+            }
+
+            match request.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        last_err = Some(anyhow::anyhow!("HTTP {status}"));
+                        continue;
+                    }
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(val) => return Ok(val),
+                        Err(e) => {
+                            last_err = Some(anyhow::Error::from(e).context("JSON parse error"));
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(anyhow::Error::from(e).context("request error"));
+                    continue;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("unknown error")))
+            .context("Wayback CDX fetch failed after retries")
+    }
+
+    /// Parse a CDX JSON response array into `UrlRecord`s.
+    /// The first element of the array is the field-header row; skip it.
+    /// The last element *may* be a 1-element array containing the resumeKey string.
+    ///
+    /// Returns `(records, Option<resume_key_string>)`.
+    fn parse_response(
+        &self,
+        value: serde_json::Value,
+    ) -> anyhow::Result<(Vec<UrlRecord>, Option<String>)> {
+        let arr = match value {
+            serde_json::Value::Array(a) => a,
+            // Empty body / null means no results
+            serde_json::Value::Null => return Ok((vec![], None)),
+            other => anyhow::bail!("Unexpected CDX response type: {other:?}"),
+        };
+
+        if arr.is_empty() {
+            return Ok((vec![], None));
+        }
+
+        let mut resume_key: Option<String> = None;
+        let mut rows = arr;
+
+        // Check the last element: if it's a single-element array containing a
+        // string (not a URL-shaped object), it's the resumeKey sentinel.
+        if let Some(last) = rows.last() {
+            if let serde_json::Value::Array(inner) = last {
+                if inner.len() == 1 {
+                    if let Some(serde_json::Value::String(key)) = inner.first() {
+                        resume_key = Some(key.clone());
+                        rows.pop(); // remove the sentinel from data rows
+                    }
+                }
+            }
+        }
+
+        // Skip the header row (index 0).
+        // Header: ["original","statuscode","timestamp","mimetype"]
+        let data_rows = rows.into_iter().skip(1);
+
+        // fl=original,statuscode,timestamp,mimetype  → indices 0,1,2,3
+        let mut records = Vec::new();
+        for row in data_rows {
+            if let serde_json::Value::Array(fields) = row {
+                let url = fields
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if url.is_empty() {
+                    continue;
+                }
+
+                let status_code = fields
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u16>().ok());
+
+                let timestamp = fields.get(2).and_then(|v| v.as_str()).map(str::to_string);
+
+                let mime_type = fields.get(3).and_then(|v| v.as_str()).map(str::to_string);
+
+                records.push(UrlRecord {
+                    url,
+                    source: "wayback".to_string(),
+                    status_code,
+                    mime_type,
+                    timestamp,
+                });
+            }
+        }
+
+        Ok((records, resume_key))
+    }
+}
+
+#[async_trait]
+impl Provider for WaybackProvider {
+    fn name(&self) -> &'static str {
+        "wayback"
+    }
+
+    async fn fetch_urls(
+        &self,
+        domain: &str,
+        include_subs: bool,
+        client: &reqwest::Client,
+    ) -> anyhow::Result<Vec<UrlRecord>> {
+        let url_param = if include_subs {
+            format!("*.{}/*", domain)
+        } else {
+            format!("{}/*", domain)
+        };
+
+        let from = self.from.as_deref();
+        let to = self.to.as_deref();
+
+        let mut all_records: Vec<UrlRecord> = Vec::new();
+        let mut resume_key: Option<String> = None;
+        // Tracks whether we've already retried an empty resumeKey once.
+        let mut empty_key_retried = false;
+
+        loop {
+            let key_ref = resume_key.as_deref();
+
+            let value = self
+                .fetch_page(client, &url_param, key_ref, from, to)
+                .await
+                .context("Wayback CDX page fetch")?;
+
+            let (records, new_key) = self.parse_response(value)?;
+            all_records.extend(records);
+
+            match new_key {
+                // No resume key → we're done.
+                None => break,
+
+                Some(ref key) if !key.is_empty() => {
+                    // Normal pagination: set key and fetch next page.
+                    empty_key_retried = false;
+                    resume_key = new_key;
+                }
+
+                Some(_) => {
+                    // Empty resume key — edge case.
+                    if empty_key_retried {
+                        // Second empty key in a row → declare done.
+                        break;
+                    }
+                    // Retry once without a resumeKey.
+                    empty_key_retried = true;
+                    resume_key = None;
+                }
+            }
+        }
+
+        Ok(all_records)
+    }
+}
