@@ -12,6 +12,7 @@ use clap::Parser;
 use tracing::{debug, warn};
 
 use config::{load_config, parse_codes, split_csv, Config};
+use providers::commoncrawl::CommonCrawlProvider;
 use providers::wayback::WaybackProvider;
 use providers::{Provider, UrlRecord};
 
@@ -222,8 +223,7 @@ async fn main() -> anyhow::Result<()> {
     let use_json = cfg.json;
 
     // ---- run providers ----
-    // Week 1: only Wayback is implemented.
-    // Later tasks will add concurrency, dedup, filters, other providers.
+    // Later tasks will add concurrency, dedup, filters, and more providers.
     for domain in &domains {
         debug!(domain = %domain, "Fetching URLs");
 
@@ -245,6 +245,23 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     warn!(domain = %domain, error = %e, "Wayback fetch failed");
+                }
+            }
+        }
+
+        if cfg.providers.contains(&"commoncrawl".to_string()) {
+            let cc = CommonCrawlProvider::new(cfg.retries, cfg.random_agent);
+
+            match cc.fetch_urls(domain, cfg.subdomains, &client).await {
+                Ok(records) => {
+                    for rec in records {
+                        if should_output(&rec, &cfg) {
+                            print_record(&rec, use_json);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(domain = %domain, error = %e, "Common Crawl fetch failed");
                 }
             }
         }
