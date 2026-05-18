@@ -132,13 +132,11 @@ impl WaybackProvider {
 
         // Check the last element: if it's a single-element array containing a
         // string (not a URL-shaped object), it's the resumeKey sentinel.
-        if let Some(last) = rows.last() {
-            if let serde_json::Value::Array(inner) = last {
-                if inner.len() == 1 {
-                    if let Some(serde_json::Value::String(key)) = inner.first() {
-                        resume_key = Some(key.clone());
-                        rows.pop(); // remove the sentinel from data rows
-                    }
+        if let Some(serde_json::Value::Array(inner)) = rows.last() {
+            if inner.len() == 1 {
+                if let Some(serde_json::Value::String(key)) = inner.first() {
+                    resume_key = Some(key.clone());
+                    rows.pop(); // remove the sentinel from data rows
                 }
             }
         }
