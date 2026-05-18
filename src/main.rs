@@ -4,19 +4,16 @@
 
 mod config;
 mod providers;
+mod runner;
 
 use std::io::{self, BufRead};
 use std::time::Duration;
 
 use clap::Parser;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use config::{load_config, parse_codes, split_csv, Config};
-use providers::commoncrawl::CommonCrawlProvider;
-use providers::otx::OtxProvider;
-use providers::urlscan::UrlScanProvider;
-use providers::wayback::WaybackProvider;
-use providers::{Provider, UrlRecord};
+use providers::UrlRecord;
 
 // ---------------------------------------------------------------------------
 // CLI definition — all 20 flags
@@ -224,87 +221,27 @@ async fn main() -> anyhow::Result<()> {
     //  to stdout but honour the --json flag format.)
     let use_json = cfg.json;
 
-    // ---- run providers ----
-    // Later tasks will add concurrency, dedup, filters, and more providers.
-    for domain in &domains {
-        debug!(domain = %domain, "Fetching URLs");
+    // ---- run providers concurrently via runner ----
+    debug!("Starting concurrent runner for {} domain(s)", domains.len());
+    let result = runner::run(&domains, &cfg, &client).await?;
 
-        if cfg.providers.contains(&"wayback".to_string()) {
-            let wb = WaybackProvider::new(
-                cfg.retries,
-                cfg.random_agent,
-                cfg.from.clone(),
-                cfg.to.clone(),
-            );
-
-            match wb.fetch_urls(domain, cfg.subdomains, &client).await {
-                Ok(records) => {
-                    for rec in records {
-                        if should_output(&rec, &cfg) {
-                            print_record(&rec, use_json);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(domain = %domain, error = %e, "Wayback fetch failed");
-                }
-            }
+    // ---- output records ----
+    for rec in &result.records {
+        if should_output(rec, &cfg) {
+            print_record(rec, use_json);
         }
+    }
 
-        if cfg.providers.contains(&"commoncrawl".to_string()) {
-            let cc = CommonCrawlProvider::new(cfg.retries, cfg.random_agent);
-
-            match cc.fetch_urls(domain, cfg.subdomains, &client).await {
-                Ok(records) => {
-                    for rec in records {
-                        if should_output(&rec, &cfg) {
-                            print_record(&rec, use_json);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(domain = %domain, error = %e, "Common Crawl fetch failed");
-                }
-            }
+    // ---- verbose stats ----
+    if cfg.verbose {
+        let mut total: usize = 0;
+        let mut sorted: Vec<(&String, &usize)> = result.stats.by_provider.iter().collect();
+        sorted.sort_by_key(|(k, _)| k.as_str());
+        for (provider, count) in &sorted {
+            eprintln!("[stats] {}: {} URLs", provider, count);
+            total += *count;
         }
-
-        if cfg.providers.contains(&"otx".to_string()) {
-            let otx = OtxProvider::new(cfg.retries, cfg.random_agent, cfg.otx.apikey.clone());
-
-            match otx.fetch_urls(domain, cfg.subdomains, &client).await {
-                Ok(records) => {
-                    for rec in records {
-                        if should_output(&rec, &cfg) {
-                            print_record(&rec, use_json);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(domain = %domain, error = %e, "OTX fetch failed");
-                }
-            }
-        }
-
-        if cfg.providers.contains(&"urlscan".to_string()) {
-            let us = UrlScanProvider::new(
-                cfg.retries,
-                cfg.random_agent,
-                cfg.urlscan.apikey.clone(),
-            );
-
-            match us.fetch_urls(domain, cfg.subdomains, &client).await {
-                Ok(records) => {
-                    for rec in records {
-                        if should_output(&rec, &cfg) {
-                            print_record(&rec, use_json);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(domain = %domain, error = %e, "URLScan fetch failed");
-                }
-            }
-        }
+        eprintln!("[stats] total: {} URLs", total);
     }
 
     Ok(())
