@@ -237,10 +237,6 @@ impl UrlScanProvider {
 
 #[async_trait]
 impl Provider for UrlScanProvider {
-    fn name(&self) -> &'static str {
-        "urlscan"
-    }
-
     async fn fetch_urls(
         &self,
         domain: &str,

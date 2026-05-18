@@ -284,10 +284,6 @@ impl CommonCrawlProvider {
 
 #[async_trait]
 impl Provider for CommonCrawlProvider {
-    fn name(&self) -> &'static str {
-        "commoncrawl"
-    }
-
     async fn fetch_urls(
         &self,
         domain: &str,

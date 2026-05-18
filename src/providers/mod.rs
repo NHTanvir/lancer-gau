@@ -38,8 +38,6 @@ pub fn random_ua(rng: &mut impl rand::Rng) -> &'static str {
 /// Every URL source implements this trait.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    fn name(&self) -> &'static str;
-
     async fn fetch_urls(
         &self,
         domain: &str,

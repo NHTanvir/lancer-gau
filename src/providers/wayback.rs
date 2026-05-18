@@ -241,10 +241,6 @@ mod tests {
 
 #[async_trait]
 impl Provider for WaybackProvider {
-    fn name(&self) -> &'static str {
-        "wayback"
-    }
-
     async fn fetch_urls(
         &self,
         domain: &str,

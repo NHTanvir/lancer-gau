@@ -27,6 +27,13 @@ pub struct ProviderStats {
     pub by_provider: HashMap<String, usize>,
 }
 
+impl ProviderStats {
+    /// Sum of URL counts across all providers.
+    pub fn total(&self) -> usize {
+        self.by_provider.values().sum()
+    }
+}
+
 /// The combined result returned by [`run`].
 pub struct RunnerResult {
     pub records: Vec<UrlRecord>,
@@ -40,7 +47,8 @@ pub struct RunnerResult {
 /// Wraps a `UrlRecord` together with its provider name so that stats can be
 /// accumulated from a single receive loop without re-inspecting `rec.source`.
 struct Message {
-    provider: String,
+    /// `Arc<str>` so that cloning per record is a cheap refcount bump, not a heap allocation.
+    provider: Arc<str>,
     record: UrlRecord,
 }
 
@@ -53,6 +61,9 @@ struct Message {
 /// Concurrency is capped at `config.threads` simultaneous tasks.  Each task
 /// sends its records into a shared `mpsc` channel; the main task drains that
 /// channel and builds the final [`RunnerResult`].
+///
+/// Currently infallible — errors are per-task and logged as warnings.
+/// Returns Ok unconditionally; the Result type is kept for future error conditions.
 pub async fn run(
     domains: &[String],
     config: &Config,
@@ -61,7 +72,7 @@ pub async fn run(
     let concurrency = config.threads.max(1);
     let semaphore = Arc::new(Semaphore::new(concurrency));
 
-    // Channel capacity: buffer up to 10 000 records before back-pressure.
+    // Back-pressure at 10k queued records; tasks block rather than OOM on large sites.
     let (tx, mut rx) = mpsc::channel::<Message>(10_000);
 
     let mut task_handles = Vec::new();
@@ -96,6 +107,10 @@ pub async fn run(
                 }
             };
 
+            // Use the config provider name as the label; it matches the
+            // canonical identifier since unknown names are skipped above.
+            let canonical_name: Arc<str> = Arc::from(provider_name.as_str());
+
             let sem = Arc::clone(&semaphore);
             let tx = tx.clone();
             let domain = domain.clone();
@@ -111,7 +126,8 @@ pub async fn run(
                     Ok(records) => {
                         for record in records {
                             let msg = Message {
-                                provider: provider_name.clone(),
+                                // Arc::clone is a cheap refcount bump — no heap allocation per record.
+                                provider: Arc::clone(&canonical_name),
                                 record,
                             };
                             // If the receiver is gone we stop quietly.
@@ -143,7 +159,7 @@ pub async fn run(
     let mut by_provider: HashMap<String, usize> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
-        *by_provider.entry(msg.provider).or_insert(0) += 1;
+        *by_provider.entry(msg.provider.to_string()).or_insert(0) += 1;
         records.push(msg.record);
     }
 

@@ -205,10 +205,6 @@ impl OtxProvider {
 
 #[async_trait]
 impl Provider for OtxProvider {
-    fn name(&self) -> &'static str {
-        "otx"
-    }
-
     async fn fetch_urls(
         &self,
         domain: &str,

@@ -234,14 +234,13 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- verbose stats ----
     if cfg.verbose {
-        let mut total: usize = 0;
         let mut sorted: Vec<(&String, &usize)> = result.stats.by_provider.iter().collect();
         sorted.sort_by_key(|(k, _)| k.as_str());
-        for (provider, count) in &sorted {
-            eprintln!("[stats] {}: {} URLs", provider, count);
-            total += *count;
+        for (name, n) in &sorted {
+            tracing::info!(provider = %name, count = n, "provider stats");
         }
-        eprintln!("[stats] total: {} URLs", total);
+        let total = result.stats.total();
+        tracing::info!(total = total, "total URLs");
     }
 
     Ok(())
